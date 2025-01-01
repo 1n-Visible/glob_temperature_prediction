@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
-#import timm # unneccesary shit
+#import timm # unnecessary
 
 #import data_loader
 from data_loader import *
@@ -28,7 +28,7 @@ class TemperatureModel(nn.Module):
         self.rnn = nn.LSTM(
             self.input_size, self.hidden_size, num_layers=self.num_layers,
             dropout=self.rnn_dropout, batch_first=True
-        ) ## batch_first=False !!
+        ) ## batch_first=False (default)!
         self.linear=nn.Linear(self.hidden_size, self.output_size)
         
         self.dataset=dataset
@@ -76,13 +76,15 @@ class TemperatureModel(nn.Module):
 
 
 def main():
+    # TODO: force the model to run on GPU!!!
     device = "cuda" if torch.cuda.is_available() else "cpu"
     '''temp_model = TemperatureModel(100, 200, 2, 50, dropout=0.005, device=device)
-    temp_model.train_temp()'''
+    temp_model.train_epoch()'''
     batch_size = 64
     
     captchas_set=CaptchasDataSet("data/captchas/train")
     datasize=len(captchas_set)
+    # torch object to load data in batches:
     #dataloader=DataLoader(captchas_set, batch_size=batch_size)
     
     temp_model=TemperatureModel(
