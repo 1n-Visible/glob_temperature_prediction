@@ -36,6 +36,7 @@ class TemperatureModel(nn.Module):
         self.loss_func = nn.MSELoss()
     
     def forward(self, x, h0=None, c0=None):
+        x=x.to(self.device)
         if h0 is None or c0 is None:
             h0 = torch.zeros(self.num_layers, self.hidden_size).to(x.device)
             c0 = torch.zeros(self.num_layers, self.hidden_size).to(x.device)
