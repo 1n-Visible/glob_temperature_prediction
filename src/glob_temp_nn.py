@@ -38,8 +38,8 @@ class TemperatureModel(nn.Module):
     def forward(self, x, h0=None, c0=None):
         x=x.to(self.device)
         if h0 is None or c0 is None:
-            h0 = torch.zeros(self.num_layers, self.hidden_size).to(x.device)
-            c0 = torch.zeros(self.num_layers, self.hidden_size).to(x.device)
+            h0 = torch.zeros(self.num_layers, self.hidden_size).to(self.device)
+            c0 = torch.zeros(self.num_layers, self.hidden_size).to(self.device)
         
         # Forward pass through LSTM
         output, (h1, c1) = self.rnn(x, (h0, c0))
