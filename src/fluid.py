@@ -1,7 +1,7 @@
 '''Module implementing fluid simulation class'''
 
 __all__=[
-    "FluidBox"
+    "FluidBox2D"
 ]
 
 import numpy as np
@@ -10,7 +10,7 @@ from numba import njit
 
 @njit(fastmath=True)
 def clip_(value, max_) -> nb.float32:
-    if value<1.0: return 1.0
+    if value<0.0: return 0.0
     if value>max_: return max_
     return value
 
@@ -22,8 +22,11 @@ def set_bounds(array) -> None:
     array[-1]=array[-2]
 
 @njit()
-def set_bounds_vel(vel, vel_type) -> None:
-    ...
+def set_bounds_vel(array) -> None:
+    array[1:-1, 0]=0
+    array[1:-1, -1]=0
+    array[0]=0
+    array[-1]=0
 
 @njit()
 def diffuse(array, diff, iterations) -> None:
@@ -43,14 +46,14 @@ def advect(array0, vel_x, vel_y) -> np.ndarray:
     
     for (i, j), value in np.ndenumerate(array0[1:-1, 1:-1]):
         i+=1; j+=1
-        x = clip_(i+vel_x[i, j], width-2)
-        y = clip_(j+vel_y[i, j], height-2)
+        x = clip_(i+vel_x[i, j], width-1)
+        y = clip_(j+vel_y[i, j], height-1)
         x0=np.int32(x); y0=np.int32(y)
         dx = x-x0; dy = y-y0
         new_array[x0,   y0  ]+=value*(1-dx)*(1-dy)
-        new_array[x0,   y0+1]+=value*(1-dx)*   dy
-        new_array[x0+1, y0  ]+=value*   dx *(1-dy)
-        new_array[x0+1, y0+1]+=value*   dx *   dy
+        new_array[x0,   (y0+1)%height]+=value*(1-dx)*   dy
+        new_array[(x0+1)%width, y0  ]+=value*   dx *(1-dy)
+        new_array[(x0+1)%width, (y0+1)%height]+=value*   dx *   dy
     
     return new_array
 
@@ -69,14 +72,15 @@ def scalar_to_array(value, size) -> np.ndarray:
         raise TypeError("value must be numpy array or float")
 
 # TODO: add width*height in meters and cell size in meters
-class FluidBox:
+class FluidBox2D:
     def __init__(self, size, ds=0.01, iterations=10, density = None,
                  diff: float = 0.001, visc: float = 0.0002, dyes=None):
         self.width, self.height=self.size=size
+        self.iterations=iterations
         self.ds=np.float32(ds)
         self.vel_x, self.vel_y=np.zeros((2,)+self.size, dtype=np.float32)
         
-        self.gas_density = (
+        self.pressure = (
             scalar_to_array(density, self.size) if density is not None
             else np.ones(size, dtype=np.float32)
         )
@@ -97,39 +101,47 @@ class FluidBox:
         self.step_inertia(dt)
     
     def step_density(self, dt):
-        diff = dt*self.diff/self.ds**2
-        #diffuse(self.gas_density, diff, 15)
+        ds=self.ds
+        diff = dt*self.diff/ds**2
+        #diffuse(self.pressure, diff, 15)
+        dx=self.vel_x*dt/ds
+        dy=self.vel_y*dt/ds
         for name, field in self.dyes.items():
             diffuse(field, diff, 12)
-            self.dyes[name] = advect(field, self.vel_x, self.vel_y)
+            self.dyes[name] = advect(field, dx, dy)
     
     def step_pressure(self, dt):
-        diffuse(self.gas_density, 1.0, 3)
-        p = self.gas_density.copy()
-        diffuse(p, 5.4, 15)
-        px = p[2:, 1:-1]-p[:-2, 1:-1]
-        py = p[1:-1, 2:]-p[1:-1, :-2]
+        ds=self.ds
+        diffuse(self.pressure, 1.0/ds**2, 3)
+        p = self.pressure.copy()
+        diffuse(p, 5.4/ds**2, 15)
+        px = (p[2:, 1:-1]-p[:-2, 1:-1])/(2*ds)
+        py = (p[1:-1, 2:]-p[1:-1, :-2])/(2*ds)
         
-        density=self.gas_density[1:-1, 1:-1]
-        s=0.9
+        density=self.pressure[1:-1, 1:-1]
+        s=0.15
         self.vel_x[1:-1, 1:-1] -= s*px*dt/density
         self.vel_y[1:-1, 1:-1] -= s*py*dt/density
     
     def step_inertia(self, dt):
-        visc = dt*self.visc/self.ds**2 # single value for all
+        ds=self.ds
+        visc = dt*self.visc/ds**2 # single value for all
         
-        density = self.gas_density
+        density = self.pressure
         inertia_x = density*self.vel_x
         inertia_y = density*self.vel_y
-        diffuse(density, visc, 15)
-        diffuse(inertia_x, visc, 15)
-        diffuse(inertia_y, visc, 15)
+        diffuse(density, visc, self.iterations)
+        diffuse(inertia_x, visc, self.iterations)
+        diffuse(inertia_y, visc, self.iterations)
         
         density[density<=0.0] = 1.0
-        vel = inertia_x/density, inertia_y/density
+        dx = inertia_x*dt/(density*ds)
+        dy = inertia_y*dt/(density*ds)
         
-        self.gas_density = density = advect(density, *vel)
+        self.pressure = density = advect(density, dx, dy)
         density[density<=0.0] = 1.0
-        self.vel_x = advect(inertia_x, *vel)/density
-        self.vel_y = advect(inertia_y, *vel)/density
+        self.vel_x = advect(inertia_x, dx, dy)/density
+        self.vel_y = advect(inertia_y, dx, dy)/density
+        set_bounds_vel(self.vel_x)
+        set_bounds_vel(self.vel_y)
         #clear_div

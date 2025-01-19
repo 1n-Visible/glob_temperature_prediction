@@ -1,5 +1,4 @@
-torch
-torchvision
+PyQt5
 numpy
-matplotlib
+numba
 netCDF4

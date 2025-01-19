@@ -1,143 +1,236 @@
-
 import pygame as pg
 import numpy as np
-#from numba import njit
+import netCDF4
+import json
 
-import fluid
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
 
-_hsv_table = [
-    [0, 1, 2], [1, 0, 2], [2, 0, 1], [2, 1, 0], [1, 2, 0], [0, 2, 1]
-]
+from fluid import *
+from utils import *
 
-def remap(array, /, new_max) -> np.ndarray:
-    return array*new_max/np.max(array)
+def label_update_mouse(self, event):
+    self.mx=event.x()
+    self.my=event.y()
 
-#@njit(fastmath=True)
-def hsv_to_rgb(hue, saturation, value):
-    h_ = (3*hue/np.pi)%6
-    h = np.abs(h_%2 - 1)
-    rgb = np.ones((3,)+(hue+saturation+value).shape, dtype=np.float32)
+class SimulationApp(QApplication):
+    MINSIZE=(300, 500)
+    EARTH_RAD=6378
     
-    h0 = (0<=h_) & (h_<1)
-    h1 = (1<=h_) & (h_<2)
-    h2 = (2<=h_) & (h_<3)
-    h3 = (3<=h_) & (h_<4)
-    h4 = (4<=h_) & (h_<5)
-    h5 = (5<=h_) & (h_<6)
-    X = (1-h*saturation)
-    X0 = 1-saturation
-    rgb[0, h1|h4] = X[h1|h4]
-    rgb[1, h0|h3] = X[h0|h3]
-    rgb[2, h2|h5] = X[h2|h5]
-    rgb[0, h2|h3] = X0[h2|h3]
-    rgb[1, h4|h5] = X0[h4|h5]
-    rgb[2, h0|h1] = X0[h0|h1]
-    # [value, value*(1-h*saturation), value*(1-saturation)]
-    return rgb*value
-
-def create_region(pos, diameter, size):
-    region0 = np.reshape(pos, (2, 1))+np.int32([[-diameter, diameter]]*2)//2
-    return tuple(slice(*np.clip(r, 0, dim)) for r, dim in zip(region0, size))
-
-class FluidDemo:
-    def __init__(self, screen_size, fps=30):
-        self.size=screen_size
-        self.screen=pg.display.set_mode(self.size, flags=pg.SCALED)
-        pg.display.set_caption("Fluid simulation")
+    def __init__(self, argv):
+        super().__init__(argv)
+        self.win = QMainWindow()
+        self.main = QWidget()
+        self.win.setCentralWidget(self.main)
         
-        self.fluid=fluid.FluidBox(self.size, iterations=15, density=0.5,
-                                  diff=1e-5, visc=5e-5, dyes={"smoke": 0.05})
-        
-        self.brush_diameter=10
-        self.display_image=np.zeros(self.size+(3,), dtype=np.uint8)
-        self.font=pg.font.SysFont("Arial", 14, bold=True)
-        self._draw_compiling()
-        
-        self.running=True
-        self.clock=pg.time.Clock()
-        self.clock.tick()
-        self.fluid.step(0.1)
-        self.clock.tick()
+        self.init_events()
+        self.init_simulation()
+        self.init_ui()
+        self.win.setMinimumSize(*self.MINSIZE)
+        self.win.setWindowTitle("Simulation Window")
+        self.win.show()
     
-    def _draw_compiling(self):
-        font_image=self.font.render("Compiling...", True, "#ffffff", "#000000")
-        rect=font_image.get_rect()
-        rect.center=self.screen.get_rect().center
-        self.screen.blit(font_image, rect.topleft)
-        pg.display.flip()
+    def init_ui(self):
+        self.layout = QGridLayout()
+        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout.setSpacing(40)
+        
+        self.init_control_panel()
+        
+        self.map_image=QPixmap("data/map.png").scaled(*self.img_size)
+        self.img_label=QLabel()
+        self.map_label=QLabel()
+        #self.map_label.setFrameStyle(QFrame.Sunken)
+        self.map_label.setPixmap(self.map_image)
+        self.map_label.setMouseTracking(True)
+        self.map_label.mouseMoveEvent=label_update_mouse
+        
+        self.layout.addLayout(self.params, 0, 0)
+        self.layout.addWidget(self.map_label, 0, 1)
+        self.layout.addWidget(self.img_label, 0, 1)
+        self.main.setLayout(self.layout)
     
-    def draw_fps(self):
-        self.screen.blit(self.font.render(
-            f"FPS: {self.clock.get_fps():.1f}", True, "#ffffff", "#000000"
-        ), (0, 0))
+    def init_control_panel(self):
+        self.params = QVBoxLayout()
+        
+        self.dt_label = QLabel("Step size: ")
+        self.dt_slider = QSlider(Qt.Horizontal)
+        self.dt_slider.valueChanged.connect(self.set_fluid_dt)
+        self.dt_slider.setRange(1, 50)
+        self.speed_label = QLabel("Simulation speed:")
+        self.speed_slider = QSlider(Qt.Horizontal)
+        self.speed_slider.valueChanged.connect(self.set_fluid_speed)
+        self.speed_slider.setRange(1, 100)
+        
+        self.blast = QGridLayout()
+        self.lat_box = QLineEdit("48.0")
+        self.lon_box = QLineEdit("32.0")
+        self.pressure_box = QLineEdit("10.0")
+        self.emissions_box = QLineEdit("1500.0")
+        self.lat_box.setMaxLength(8); self.lon_box.setMaxLength(8)
+        self.blast.addWidget(QLabel("Широта:"), 0, 0)
+        self.blast.addWidget(QLabel("Довгота:"), 1, 0)
+        self.blast.addWidget(QLabel("Енергія вибуху (МДж):"), 2, 0) # J = Pa*m**3
+        self.blast.addWidget(QLabel("Об'єм викидів (л):"), 3, 0)
+        self.blast.addWidget(self.lat_box, 0, 1)
+        self.blast.addWidget(self.lon_box, 1, 1)
+        self.blast.addWidget(self.pressure_box, 2, 1)
+        self.blast.addWidget(self.emissions_box, 3, 1)
+        
+        self.gen_button = QPushButton("Вибух")
+        self.gen_button.clicked.connect(self.create_blast)
+        self.pause_button = QPushButton("Пауза") # QToolButton for icon
+        self.pause_button.clicked.connect(self.play_pause)
+        self.info_label = QLabel()
+        self.info_label.mx=0; self.info_label.my=0
+        
+        self.params.addWidget(self.dt_label)
+        self.params.addWidget(self.dt_slider)
+        self.params.addWidget(self.speed_label)
+        self.params.addWidget(self.speed_slider)
+        self.params.addLayout(self.blast)
+        self.params.addStretch()
+        self.params.addWidget(self.gen_button, alignment=Qt.AlignHCenter)
+        self.params.addWidget(self.pause_button)
+        self.params.addWidget(self.info_label)
     
-    def update(self):
-        dt=self.clock.get_time()/1000
-        
-        mouse_buttons = pg.mouse.get_pressed()
-        mouse_pos = pg.mouse.get_pos()
-        mouse_dx, mouse_dy = pg.mouse.get_rel()
-        if mouse_buttons[0]:
-            region=create_region(mouse_pos, self.brush_diameter, self.size)
-            #print(region)
-            smoke=self.fluid.get_dye("smoke")
-            smoke[region]+=0.1*dt
-            self.fluid.gas_density[region]+=0.1*dt
-            self.fluid.vel_x[region]+=0.05*dt*mouse_dx
-            self.fluid.vel_y[region]+=0.05*dt*mouse_dy
-        
-        keys=pg.key.get_pressed()
-        if keys[pg.K_s]:
-            self.fluid.vel_x*=0.95
-            self.fluid.vel_y*=0.95
-        if keys[pg.K_d]:
-            self.fluid.gas_density*=0.95
-        if keys[pg.K_LALT]:
-            for i in range(3):
-                self.fluid.step(dt)
-        
-        if self.running:
-            self.fluid.gas_density*=0.995
-            smoke=self.fluid.get_dye("smoke")
-            smoke*=0.999
-            self.fluid.step(dt)
+    def init_events(self):
+        self.fluid_timer = QTimer(self)
+        self.fluid_timer.setSingleShot(False)
+        self.fluid_timer.setInterval(10) # in milliseconds
+        self.fluid_timer.timeout.connect(self.update_fluid_image)
+        self.fluid_timer.start()
     
-    def draw(self):
-        smoke=self.fluid.gas_density#get_dye("smoke")
-        vx=self.fluid.vel_x
-        vy=self.fluid.vel_y
-        angle=np.nan_to_num(np.arctan2(vy, vx), copy=False)
+    def init_simulation(self):
+        with open("data/dimensions.json", "r") as file:
+            dim_data=json.load(file)
+        self.min_lat, self.max_lat = dim_data["lat"]
+        self.min_lon, self.max_lon = dim_data["lon"]
         
-        value=(smoke/smoke.max())**0.03
-        vel=vx*vx+vy*vy
-        rgb = 255*hsv_to_rgb(angle, vel/vel.max(), value)
-        self.display_image[:, :, 0]=rgb[0]
-        self.display_image[:, :, 1]=rgb[1]
-        self.display_image[:, :, 2]=rgb[2]
+        self.width_deg = self.max_lon-self.min_lon
+        self.height_deg = self.max_lat-self.min_lat
+        self.width_km = np.pi*self.EARTH_RAD*self.width_deg/180
+        self.height_km = np.pi*self.EARTH_RAD*self.height_deg/180
+        #print(self.width_km, self.height_km)
+        self.img_width=500; self.ds=self.width_km/self.img_width
+        self.img_height=int(self.height_km/self.ds)
         
-        pg.pixelcopy.array_to_surface(self.screen, self.display_image)
-        self.draw_fps()
-        pg.display.flip()
+        self.img_size=(self.img_width, self.img_height)
+        self.fluid=FluidBox2D(self.img_size, ds=0.01, iterations=10,
+                              density=None, diff=1e-5, visc=2e-4,
+                              dyes={"chemical": 0.0})
+        self.img_array=np.zeros(self.img_size+(4,), dtype=np.uint8)
+        self.img_array[:, :, 0]=80
+        self.img_array[:, :, 1]=230
+        self.img_array[:, :, 2]=80
+        
+        with netCDF4.Dataset("data/u-wind.nc", "r") as file:
+            u_wind=file["uwnd"][-1].transpose(1, 0) # отримати дані за сьогодні
+        with netCDF4.Dataset("data/v-wind.nc", "r") as file:
+            v_wind=file["vwnd"][-1].transpose(1, 0)
+        with netCDF4.Dataset("data/pressure.nc", "r") as file:
+            slp=file["slp"][-1].transpose(1, 0)
+        
+        lon_min=self.min_lon/360; lon_max=self.max_lon/360
+        lat_min=(90-self.max_lat)/180; lat_max=(90-self.min_lat)/180
+        scale=np.reshape(
+            np.array([lon_max-lon_min, lat_max-lat_min])/self.img_size,
+            (2, 1, 1)
+        )
+        pos=tuple(np.int32(np.reshape(u_wind.shape, (2, 1, 1))*(
+            np.mgrid[:self.img_width, :self.img_height]*scale +
+            np.reshape([lon_min, lat_min], (2, 1, 1))
+        )))
+        self.fluid.vel_x[:]=v_wind[pos]/100 # from m/s to km/s
+        self.fluid.vel_y[:]=u_wind[pos]/100
+        self.fluid.pressure[:]=slp[pos]
+        
+        self.is_running=False
+        self.fluid_dt=0.1
+        self.fluid_speed=1.0
+    
+    def update_fluid_image(self):
+        self.info_label.setText(f"({self.info_label.mx}, {self.info_label.my})")
+        
+        if self.is_running:
+            self.fluid.step(self.fluid_dt)
+        
+        #vx=self.fluid.vel_x
+        #vy=self.fluid.vel_y
+        #angle=np.nan_to_num(np.arctan2(vy, vx), copy=False)
+        chemical=self.fluid.get_dye("chemical")
+        #vel=vx*vx+vy*vy
+        #rgb = 255*hsv_to_rgb(angle, 1.0, 1.0)
+        #self.img_array[:, :, 0]=rgb[0]
+        #self.img_array[:, :, 1]=rgb[1]
+        #self.img_array[:, :, 2]=rgb[2]
+        self.img_array[:, :, 3]=255*chemical/chemical.max()
+        arr1=np.require(self.img_array.transpose(1, 0, 2), requirements="C")
+        self.qimage=QImage(
+            arr1, self.img_width, self.img_height,
+            QImage.Format_RGBA8888
+        )
+        self.img_label.setPixmap(QPixmap(self.qimage))
+    
+    def set_blast(self):
+        self.blast_lat=float(self.lat_box.text())
+        self.blast_lon=float(self.lon_box.text())
+        self.blast_pressure=float(self.pressure_box.text())
+        self.blast_emissions=float(self.emissions_box.text())
+    
+    def create_blast(self):
+        try:
+            self.set_blast()
+        except (TypeError, ValueError):
+            return
+        
+        expl_size = 10
+        uv_pos = np.array([
+            1-(self.blast_lat-self.min_lat)/self.height_deg,
+            (self.blast_lon-self.min_lon)/self.width_deg
+        ])
+        region=create_region(np.int32(uv_pos*self.img_size), expl_size, self.img_size)
+        self.fluid.pressure[region]+=self.blast_pressure/expl_size**2
+        chemical=self.fluid.get_dye("chemical")
+        chemical[region]+=self.blast_emissions/expl_size**2
+    
+    def update_info(self, event):
+        mx=event.x(); my=event.y()
+        self.info_label.setText(f"pos: {mx}, {my}")
+    
+    def set_fluid_dt(self, value):
+        self.fluid_dt=value/1000
+        self.dt_label.setText(f"Step size: {self.fluid_dt:.3f}min")
+        self.fluid_timer.setInterval(int(1000*self.fluid_dt/self.fluid_speed))
+    
+    def set_fluid_speed(self, value):
+        self.fluid_speed=value
+        self.speed_label.setText(f"Simulation speed: {value:g}x")
+        self.fluid_timer.setInterval(int(1000*self.fluid_dt/self.fluid_speed))
+    
+    def play_pause(self):
+        self.is_running = not self.is_running
+    
+    def close(self):
+        self.closeAllWindows()
     
     def mainloop(self):
         while True:
-            self.update()
-            for event in pg.event.get():
-                if event.type==pg.QUIT:
-                    return 0
-                if event.type!=pg.KEYUP:
-                    continue
-                if event.key==pg.K_SPACE:
-                    self.running = not self.running
-            self.clock.tick()
-            self.draw()
+            pass
         return 0
 
-def main():
+def main0():
     pg.init()
     pg.font.init()
     fluid_demo=FluidDemo((250, 200))
     return fluid_demo.mainloop()
+
+def main():
+    import sys
+    sim_app=SimulationApp(sys.argv)
+    sim_app.exec()
+    #return sim_app.mainloop()
 
 if __name__=="__main__":
     main()
