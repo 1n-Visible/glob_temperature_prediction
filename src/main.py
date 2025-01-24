@@ -1,4 +1,3 @@
-import pygame as pg
 import numpy as np
 import netCDF4
 import json
@@ -82,8 +81,8 @@ class SimulationApp(QApplication):
         self.gen_button.clicked.connect(self.create_blast)
         self.pause_button = QPushButton("Пауза") # QToolButton for icon
         self.pause_button.clicked.connect(self.play_pause)
-        self.info_label = QLabel()
-        self.info_label.mx=0; self.info_label.my=0
+        #self.info_label = QLabel()
+        #self.info_label.mx=0; self.info_label.my=0
         
         self.params.addWidget(self.dt_label)
         self.params.addWidget(self.dt_slider)
@@ -93,7 +92,7 @@ class SimulationApp(QApplication):
         self.params.addStretch()
         self.params.addWidget(self.gen_button, alignment=Qt.AlignHCenter)
         self.params.addWidget(self.pause_button)
-        self.params.addWidget(self.info_label)
+        #self.params.addWidget(self.info_label)
     
     def init_events(self):
         self.fluid_timer = QTimer(self)
@@ -113,17 +112,14 @@ class SimulationApp(QApplication):
         self.width_km = np.pi*self.EARTH_RAD*self.width_deg/180
         self.height_km = np.pi*self.EARTH_RAD*self.height_deg/180
         #print(self.width_km, self.height_km)
-        self.img_width=500; self.ds=self.width_km/self.img_width
-        self.img_height=int(self.height_km/self.ds)
+        self.img_width=500; ds=self.width_km/self.img_width
+        self.img_height=int(self.height_km/ds)
         
         self.img_size=(self.img_width, self.img_height)
-        self.fluid=FluidBox2D(self.img_size, ds=0.01, iterations=10,
-                              density=None, diff=1e-5, visc=2e-4,
+        self.fluid=FluidBox2D(self.img_size, ds=ds, iterations=10,
+                              pressure=1.0, diff=1e-5, visc=2e-4,
                               dyes={"chemical": 0.0})
         self.img_array=np.zeros(self.img_size+(4,), dtype=np.uint8)
-        self.img_array[:, :, 0]=80
-        self.img_array[:, :, 1]=230
-        self.img_array[:, :, 2]=80
         
         with netCDF4.Dataset("data/u-wind.nc", "r") as file:
             u_wind=file["uwnd"][-1].transpose(1, 0) # отримати дані за сьогодні
@@ -142,30 +138,30 @@ class SimulationApp(QApplication):
             np.mgrid[:self.img_width, :self.img_height]*scale +
             np.reshape([lon_min, lat_min], (2, 1, 1))
         )))
-        self.fluid.vel_x[:]=v_wind[pos]/100 # from m/s to km/s
-        self.fluid.vel_y[:]=u_wind[pos]/100
-        self.fluid.pressure[:]=slp[pos]
+        self.fluid.vel_x[:]=v_wind[pos]/1000 # from m/s to km/s
+        self.fluid.vel_y[:]=u_wind[pos]/1000
+        self.fluid.pressure[:]=slp[pos]*100 # from hPa to Pa
         
         self.is_running=False
         self.fluid_dt=0.1
         self.fluid_speed=1.0
     
     def update_fluid_image(self):
-        self.info_label.setText(f"({self.info_label.mx}, {self.info_label.my})")
+        #self.info_label.setText(f"({self.info_label.mx}, {self.info_label.my})")
         
         if self.is_running:
             self.fluid.step(self.fluid_dt)
         
-        #vx=self.fluid.vel_x
-        #vy=self.fluid.vel_y
-        #angle=np.nan_to_num(np.arctan2(vy, vx), copy=False)
+        vx=self.fluid.vel_x
+        vy=self.fluid.vel_y
+        angle=np.nan_to_num(np.arctan2(vy, vx), copy=False)
         chemical=self.fluid.get_dye("chemical")
-        #vel=vx*vx+vy*vy
-        #rgb = 255*hsv_to_rgb(angle, 1.0, 1.0)
-        #self.img_array[:, :, 0]=rgb[0]
-        #self.img_array[:, :, 1]=rgb[1]
-        #self.img_array[:, :, 2]=rgb[2]
-        self.img_array[:, :, 3]=255*chemical/chemical.max()
+        vel=vx*vx+vy*vy
+        rgb = 255*hsv_to_rgb(angle, 1.0, 1.0)
+        self.img_array[:, :, 0]=rgb[0]
+        self.img_array[:, :, 1]=rgb[1]
+        self.img_array[:, :, 2]=rgb[2]
+        self.img_array[:, :, 3]=128#*chemical/chemical.max()
         arr1=np.require(self.img_array.transpose(1, 0, 2), requirements="C")
         self.qimage=QImage(
             arr1, self.img_width, self.img_height,
@@ -193,7 +189,7 @@ class SimulationApp(QApplication):
         region=create_region(np.int32(uv_pos*self.img_size), expl_size, self.img_size)
         self.fluid.pressure[region]+=self.blast_pressure/expl_size**2
         chemical=self.fluid.get_dye("chemical")
-        chemical[region]+=self.blast_emissions/expl_size**2
+        chemical[region]+=1e6*self.blast_emissions/expl_size**2
     
     def update_info(self, event):
         mx=event.x(); my=event.y()
@@ -201,7 +197,7 @@ class SimulationApp(QApplication):
     
     def set_fluid_dt(self, value):
         self.fluid_dt=value/1000
-        self.dt_label.setText(f"Step size: {self.fluid_dt:.3f}min")
+        self.dt_label.setText(f"Step size: {self.fluid_dt:.3f}s")
         self.fluid_timer.setInterval(int(1000*self.fluid_dt/self.fluid_speed))
     
     def set_fluid_speed(self, value):

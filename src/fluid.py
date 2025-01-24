@@ -64,7 +64,7 @@ def scalar_to_array(value, size) -> np.ndarray:
     if isinstance(value, np.ndarray):
         if value.shape!=size:
             raise ValueError("value must be of the same shape as size")
-        return np.float32(density)
+        return np.float32(value)
     
     try:
         return np.full(size, value, dtype=np.float32)
@@ -73,7 +73,7 @@ def scalar_to_array(value, size) -> np.ndarray:
 
 # TODO: add width*height in meters and cell size in meters
 class FluidBox2D:
-    def __init__(self, size, ds=0.01, iterations=10, density = None,
+    def __init__(self, size, ds=0.01, iterations=10, pressure = None,
                  diff: float = 0.001, visc: float = 0.0002, dyes=None):
         self.width, self.height=self.size=size
         self.iterations=iterations
@@ -81,7 +81,7 @@ class FluidBox2D:
         self.vel_x, self.vel_y=np.zeros((2,)+self.size, dtype=np.float32)
         
         self.pressure = (
-            scalar_to_array(density, self.size) if density is not None
+            scalar_to_array(pressure, self.size) if pressure is not None
             else np.ones(size, dtype=np.float32)
         )
         
@@ -112,36 +112,35 @@ class FluidBox2D:
     
     def step_pressure(self, dt):
         ds=self.ds
-        diffuse(self.pressure, 1.0/ds**2, 3)
+        diffuse(self.pressure, 2e-5/ds**2, 3)
         p = self.pressure.copy()
-        diffuse(p, 5.4/ds**2, 15)
+        diffuse(p, 4e-5/ds**2, 15)
         px = (p[2:, 1:-1]-p[:-2, 1:-1])/(2*ds)
         py = (p[1:-1, 2:]-p[1:-1, :-2])/(2*ds)
-        
-        density=self.pressure[1:-1, 1:-1]
-        s=0.15
-        self.vel_x[1:-1, 1:-1] -= s*px*dt/density
-        self.vel_y[1:-1, 1:-1] -= s*py*dt/density
+        s=0.01
+        pressure=self.pressure[1:-1, 1:-1]
+        self.vel_x[1:-1, 1:-1] -= s*px*dt/pressure
+        self.vel_y[1:-1, 1:-1] -= s*py*dt/pressure
     
     def step_inertia(self, dt):
         ds=self.ds
         visc = dt*self.visc/ds**2 # single value for all
         
-        density = self.pressure
-        inertia_x = density*self.vel_x
-        inertia_y = density*self.vel_y
-        diffuse(density, visc, self.iterations)
+        pressure = self.pressure
+        inertia_x = pressure*self.vel_x
+        inertia_y = pressure*self.vel_y
+        diffuse(pressure, visc, self.iterations)
         diffuse(inertia_x, visc, self.iterations)
         diffuse(inertia_y, visc, self.iterations)
         
-        density[density<=0.0] = 1.0
-        dx = inertia_x*dt/(density*ds)
-        dy = inertia_y*dt/(density*ds)
+        pressure[pressure<=0.0] = 1.0
+        dx = inertia_x*dt/(pressure*ds)
+        dy = inertia_y*dt/(pressure*ds)
         
-        self.pressure = density = advect(density, dx, dy)
-        density[density<=0.0] = 1.0
-        self.vel_x = advect(inertia_x, dx, dy)/density
-        self.vel_y = advect(inertia_y, dx, dy)/density
+        self.pressure = pressure = advect(pressure, dx, dy)
+        pressure[pressure<=0.0] = 1.0
+        self.vel_x = advect(inertia_x, dx, dy)/pressure
+        self.vel_y = advect(inertia_y, dx, dy)/pressure
         set_bounds_vel(self.vel_x)
         set_bounds_vel(self.vel_y)
         #clear_div

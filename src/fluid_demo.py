@@ -1,3 +1,8 @@
+import pygame as pg
+import numpy as np
+
+from fluid import *
+from utils import *
 
 class FluidDemo:
     def __init__(self, screen_size, fps=30):
@@ -5,8 +10,8 @@ class FluidDemo:
         self.screen=pg.display.set_mode(self.size, flags=pg.SCALED)
         pg.display.set_caption("Fluid simulation")
         
-        self.fluid=FluidBox2D(self.size, iterations=15, density=0.5,
-                              diff=1e-5, visc=5e-5, dyes={"smoke": 0.05})
+        self.fluid=FluidBox2D(self.size, ds=1/self.size[0], iterations=15,
+                pressure=0.5, diff=1e-6, visc=5e-6, dyes={"smoke": 0.05})
         
         self.brush_diameter=10
         self.display_image=np.zeros(self.size+(3,), dtype=np.uint8)
@@ -41,29 +46,30 @@ class FluidDemo:
             region=create_region(mouse_pos, self.brush_diameter, self.size)
             #print(region)
             smoke=self.fluid.get_dye("smoke")
+            ds=self.fluid.ds
             smoke[region]+=0.1*dt
-            self.fluid.gas_density[region]+=0.1*dt
-            self.fluid.vel_x[region]+=0.05*dt*mouse_dx
-            self.fluid.vel_y[region]+=0.05*dt*mouse_dy
+            self.fluid.pressure[region]+=0.1*dt
+            self.fluid.vel_x[region]+=0.5*dt*ds*mouse_dx
+            self.fluid.vel_y[region]+=0.5*dt*ds*mouse_dy
         
         keys=pg.key.get_pressed()
         if keys[pg.K_s]:
             self.fluid.vel_x*=0.95
             self.fluid.vel_y*=0.95
         if keys[pg.K_d]:
-            self.fluid.gas_density*=0.95
+            self.fluid.pressure*=0.95
         if keys[pg.K_LALT]:
             for i in range(3):
                 self.fluid.step(dt)
         
         if self.running:
-            self.fluid.gas_density*=0.995
+            #self.fluid.pressure*=0.995
             smoke=self.fluid.get_dye("smoke")
             smoke*=0.999
             self.fluid.step(dt)
     
     def draw(self):
-        smoke=self.fluid.gas_density#get_dye("smoke")
+        smoke=self.fluid.pressure#get_dye("smoke")
         vx=self.fluid.vel_x
         vy=self.fluid.vel_y
         angle=np.nan_to_num(np.arctan2(vy, vx), copy=False)
@@ -92,3 +98,12 @@ class FluidDemo:
             self.clock.tick()
             self.draw()
         return 0
+
+def main():
+    pg.init()
+    pg.font.init()
+    fluid_demo=FluidDemo((300, 200))
+    fluid_demo.mainloop()
+
+if __name__=="__main__":
+    main()
